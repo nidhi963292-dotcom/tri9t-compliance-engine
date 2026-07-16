@@ -3,7 +3,6 @@ import os
 import json
 import httpx
 from typing import List, Dict, Any
-from app.schemas import StructuredTestCases
 
 def generate_qa_scenarios(combined_context: str, max_retries: int = 3) -> Dict[str, Any]:
     """
@@ -55,6 +54,9 @@ def generate_qa_scenarios(combined_context: str, max_retries: int = 3) -> Dict[s
                 
                 result_json = response.json()
                 raw_content = result_json["choices"][0]["message"]["content"]
+                
+                # Moved here to break the circular dependency import loop
+                from app.schemas import StructuredTestCases
                 
                 # Enforce structure validation bounds using Pydantic models
                 validated_data = StructuredTestCases.parse_raw(raw_content)
