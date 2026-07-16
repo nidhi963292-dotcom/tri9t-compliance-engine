@@ -10,6 +10,7 @@ from app import models, schemas, parser, versioning, llm
 from app.database import SessionLocal, engine
 from app.json_store import JSONDocumentStore
 
+
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Tri9T AI Compliance Mapping Engine", version="1.0.0")
@@ -66,20 +67,33 @@ async def ingest_document(version_tag: str, file: UploadFile = File(...), db: Se
 
 @app.get("/api/v1/documents/{version_tag}/tree")
 def browse_hierarchy_tree(version_tag: str, db: Session = Depends(get_db)):
-    """Returns the flattened list of tree blocks for the specified document version."""
+    """Returns the nested folder tree of nodes for the specified document version."""
     version = db.query(models.DocumentVersion).filter_by(version_tag=version_tag).first()
     if not version:
         raise HTTPException(status_code=404, detail="Version requested not found.")
-    return [
-        {
+    
+    # Build internal lookup dict
+    node_map = {}
+    for n in version.nodes:
+        node_map[n.id] = {
             "node_id": n.id,
             "parent_id": n.parent_id,
             "heading": f"{n.heading_number} {n.heading_title}",
             "level": n.level,
             "body_snippet": n.body_text[:60] if n.body_text else "",
-            "has_table": n.table_data is not None
-        } for n in version.nodes
-    ]
+            "has_table": n.table_data is not None,
+            "children": []
+        }
+        
+    tree = []
+    for n in version.nodes:
+        mapped_node = node_map[n.id]
+        if n.parent_id and n.parent_id in node_map:
+            node_map[n.parent_id]["children"].append(mapped_node)
+        else:
+            tree.append(mapped_node)
+            
+    return tree
 
 @app.post("/api/v1/selections/pin", response_model=schemas.SelectionResponse)
 def pin_selection(payload: schemas.SelectionCreate, db: Session = Depends(get_db)):
@@ -132,14 +146,14 @@ def trigger_test_generation(selection_id: str, payload: schemas.GenerationReques
     storage_payload = {
         "selection_id": selection_id,
         "model_output": ai_output,
-        "context_snapshot_md5": uuid.uuid4().hex # Tracking asset tag fingerprints
+        "context_snapshot_md5": uuid.uuid4().hex
     }
     nosql_store.save_generation(selection_id, storage_payload)
     return {"status": "GENERATED", "data": storage_payload}
 
 @app.get("/api/v1/selections/{selection_id}/staleness", response_model=schemas.StalenessResponse)
 def evaluate_selection_staleness(selection_id: str, target_version: str, db: Session = Depends(get_db)):
-    """Evaluates text modifications and structural shifts across document versions."""
+    """Evaluates text modifications and structural shifts across document versions safely."""
     pins = db.query(models.PinnedSelection).filter_by(selection_id=selection_id).all()
     if not pins:
         raise HTTPException(status_code=404, detail="Active selection missing.")
@@ -148,20 +162,39 @@ def evaluate_selection_staleness(selection_id: str, target_version: str, db: Ses
     if not v2_version:
         raise HTTPException(status_code=404, detail="Target tracking baseline not initialized.")
         
-    v2_nodes_dict = {f"{n.heading_number}_{n.heading_title}": n for n in v2_version.nodes}
+    # Safe lookup dict generation using string conversion fallback parameters
+    v2_nodes_dict = {}
+    for n in v2_version.nodes:
+        h_num = n.heading_number if n.heading_number else ""
+        h_title = n.heading_title if n.heading_title else ""
+        v2_nodes_dict[f"{h_num}_{h_title}"] = n
+        
     report = []
     
     for pin in pins:
         original_node = pin.node
-        analysis = versioning.check_staleness(original_node, v2_nodes_dict)
-        
-        report.append({
-            "node_id": original_node.id,
-            "heading": f"{original_node.heading_number} {original_node.heading_title}",
-            "is_stale": analysis["is_stale"],
-            "status_reason": analysis["reason"],
-            "similarity_score": round(analysis["diff_ratio"], 4)
-        })
+        if not original_node:
+            continue
+            
+        try:
+            analysis = versioning.check_staleness(original_node, v2_nodes_dict)
+            
+            report.append({
+                "node_id": original_node.id,
+                "heading": f"{original_node.heading_number or ''} {original_node.heading_title or ''}".strip(),
+                "is_stale": analysis.get("is_stale", False),
+                "status_reason": analysis.get("reason", "Evaluation processed successfully"),
+                "similarity_score": round(analysis.get("diff_ratio", 0.0), 4)
+            })
+        except Exception as inner_err:
+            # Safe boundary catch to keep single node schema mismatch issues from breaking the complete payload list
+            report.append({
+                "node_id": original_node.id,
+                "heading": f"{original_node.heading_number or ''} {original_node.heading_title or ''}".strip(),
+                "is_stale": True,
+                "status_reason": f"Analysis execution exception: {str(inner_err)}",
+                "similarity_score": 0.0
+            })
         
     return {"target_version_tag": target_version, "staleness_report": report}
 

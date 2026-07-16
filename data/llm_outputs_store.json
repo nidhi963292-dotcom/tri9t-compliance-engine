@@ -1,1 +1,20 @@
-{}
+{
+  "1e4bf682-04fe-478b-8a65-5365faabcb38": {
+    "selection_id": "1e4bf682-04fe-478b-8a65-5365faabcb38",
+    "model_output": {
+      "test_cases": [
+        {
+          "id": "TC_MOCK_1",
+          "scenario": "Simulate pressure above threshold limits.",
+          "expected_result": "Emergency vents open."
+        },
+        {
+          "id": "TC_MOCK_2",
+          "scenario": "Disconnect inflation cuff entirely.",
+          "expected_result": "E1 logs immediately."
+        }
+      ]
+    },
+    "context_snapshot_md5": "3974677fa5ed4295b7d197415f6404ba"
+  }
+}
